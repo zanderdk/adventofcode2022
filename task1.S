@@ -1,11 +1,11 @@
 [bits 16]
 org 0x0                         ; actually this is at 0xf0000 as the code segement register is 0xf000 upon boot
 
-ivtspacing equ 0x8
+ivt_spacing equ 0x8
 ivt:                            ; macro loop for inserting ivt entries
 %assign i 0
 %rep    256
-    dw 0x1000 + i*ivtspacing          ; .data segment cannot be bigger than 0x1000
+    dw 0x1000 + i*ivt_spacing          ; .data segment cannot be bigger than 0x1000
     dw 0xf000
 %assign i i+1
 %endrep
@@ -14,16 +14,16 @@ _ivt:
     dd 0x3ff                    ; limit idt
     dd 0x0                      ; base idt
 
-normalstack:
+normal_stack:
     dw 0x7000
-ivtstack:
-    dw 0x9000
+ivt_stack:
+    dw 0x8000
 
 prompt:
     db '> ',0
 
 align 0x1000                    ; actually data segment must be exactly 0x1000
-datasegmentend:                 ; code segment starts here and is mapped to code selector 0xf000
+data_segment_end:                 ; code segment starts here and is mapped to code selector 0xf000
                                 ; code go brrr:
 
     ;;  ivt jump talbe here
@@ -31,31 +31,31 @@ datasegmentend:                 ; code segment starts here and is mapped to code
 %rep    0x14
     cli                         ; no interupts while interupting
     mov ax, i
-    jmp inthandler
-    align ivtspacing            ; should be enoguh for a jump table
+    jmp int_handler
+    align ivt_spacing            ; should be enoguh for a jump table
 %assign i i+1
 %endrep
 
-jmp instructionint14handler     ; special handler for serial communication
-align ivtspacing
+jmp instruction_int_14_handler     ; special handler for serial communication
+align ivt_spacing
 
 %assign i 0
 %rep    (0x100 - 0x15)
     cli                         ; no interupts while interupting
     mov ax, (i + 0x15)
-    jmp hwinthandler
-    align ivtspacing
+    jmp hw_int_handler
+    align ivt_spacing
 %assign i i+1
 %endrep
 
 align 0x0800                    ; end ivt jump talbe
 
-inthandler:
+int_handler:
 mov bx, ax
 mov eax, 0xdea0
 hlt
 
-hwinthandler:
+hw_int_handler:
 mov bx, ax
 mov eax, 0xdea1
 hlt
@@ -63,7 +63,7 @@ hlt
     ;; boiler plate done for fault detection ivt
     ;; probably gonna need it for when i divide by 0 or some stupid shit later
 
-iowait:
+io_wait:
     push dx
     push ax
     mov dx, 0x80
@@ -92,7 +92,7 @@ ICW4_BUF_SLAVE equ 0x8
 ICW4_BUF_MASTER equ 0xc
 ICW4_SFNM equ 0xc
 
-setupinteruptcontroller:        ; init pic 8259a
+setup_interupt_controller:        ; init pic 8259a
     push ax
 
     xor ax, ax
@@ -106,68 +106,68 @@ setupinteruptcontroller:        ; init pic 8259a
     mov dx, PIC1_COMMAND                ; starts the initialization sequence (in cascade mode)
     mov ax, (ICW1_INIT | ICW1_ICW4)
     out dx, al
-    call iowait
+    call io_wait
 
     mov dx, PIC2_COMMAND
     mov ax, (ICW1_INIT | ICW1_ICW4)
     out dx, al
-    call iowait
+    call io_wait
 
 
     mov dx, PIC1_DATA
     mov ax, 0x60                        ; Master PIC vector offset
     out dx, al
-    call iowait
+    call io_wait
 
     mov dx, PIC2_DATA
     mov ax, 0x68                        ; Slave PIC vector offset
     out dx, al
-    call iowait
+    call io_wait
 
 
     mov dx, PIC1_DATA
     mov ax, 0x4                         ; Tell master PIC that there is a slave PIC at IRQ2
     out dx, al
-    call iowait
+    call io_wait
 
     mov dx, PIC1_DATA
     mov ax, 0x2                         ; tell Slave PIC its cascade identity
     out dx, al
-    call iowait
+    call io_wait
 
 
     mov dx, PIC1_DATA
     mov ax, ICW4_8086
     out dx, al
-    call iowait
+    call io_wait
 
     mov dx, PIC1_DATA
     mov ax, ICW4_8086
     out dx, al
-    call iowait
+    call io_wait
 
     mov dx, PIC2_DATA                   ; Restore mask inorder they were pushed
     pop ax
     out dx, al
-    call iowait
+    call io_wait
 
     mov dx, PIC1_DATA
     pop ax
     out dx, al
-    call iowait
+    call io_wait
     pop dx
     ret
 
-setirqbitmaskline:
+set_irq_bit_mask_line:
     push dx
     push bx
     push cx
     mov bx, PIC1_DATA
     mov dx, PIC2_DATA
     cmp di, 0x8
-    jae setirqmoveskip
+    jae set_irq_move_skip
     mov dx, bx
-setirqmoveskip:
+set_irq_move_skip:
     and di, 0x0f
     mov cx, di
     in al, dx
@@ -180,16 +180,16 @@ setirqmoveskip:
     pop dx
     ret
 
-clearirqbitmaskline:
+clea_irq_bit_mask_line:
     push dx
     push bx
     push cx
     mov bx, PIC1_DATA
     mov dx, PIC2_DATA
     cmp di, 0x8
-    jae clearirqmovskip
+    jae clear_irq_move_skip
     mov dx, bx
-clearirqmovskip:
+clear_irq_move_skip:
     and di, 0x0f
     mov cx, di
     in al, dx
@@ -203,10 +203,10 @@ clearirqmovskip:
     pop dx
     ret
 
-instructionint14handler:
+instruction_int_14_handler:
     cld
-    mov [normalstack], sp
-    mov sp, [ivtstack]
+    mov [normal_stack], sp
+    mov sp, [ivt_stack]
     push di
     push si
     push dx
@@ -215,40 +215,40 @@ instructionint14handler:
     mov si, ax
     and si, 0xff00
     shr si, 8
-    call instructionhandler
-instexit:
+    call instruction_handler
+inst_exit:
     pop dx
     pop si
     pop di
-    mov sp, [normalstack]
+    mov sp, [normal_stack]
     iret                        ; iret will take care of restoring interuptflag and direction flag?
 
-instructionhandler:
+instruction_handler:
     cmp di, 0x14
-    jne insterr
+    jne inst_err
     mov di, si
     mov si, dx
-    call serialhandle
+    call serial_handle
     ret
-insterr:
+inst_err:
     mov eax, 0xdea2
     hlt
 
 UART equ 0x3f8
 
-serialhandle:
+serial_handle:
     cmp di, 0x0
-    je serialinit
+    je serial_init
     cmp di, 0x2
-    je serialread
+    je serial_read
     cmp di, 0x3
-    je serialstatus
+    je serial_status
     cmp di, 0x1
     mov di, si
-    je serialwrite
+    je serial_write
     ret
 
-serialinit:
+serial_init:
     push dx
     mov ax, 0x00
     mov dx ,(UART + 1)
@@ -273,11 +273,11 @@ serialinit:
     pop dx
     ret
 
-serialcheckfail:
+serial_check_fail:
     mov eax, 0xdea3
     hlt
 
-serialwrite:
+serial_write:
     push dx
     mov ax, di
     mov dx ,(UART + 0)
@@ -285,7 +285,7 @@ serialwrite:
     pop dx
     ret
 
-serialread:
+serial_read:
     push dx
     mov ax, 0x0
     mov dx ,(UART + 0)
@@ -293,7 +293,7 @@ serialread:
     pop dx
     ret
 
-serialstatus:
+serial_status:
     push dx
     mov ax, 0x0
     mov dx ,(UART + 5)
@@ -315,7 +315,7 @@ boot:
     mov eax, 0x0                    ; copy everything to writeable space
     mov fs,  ax
     mov bx, 0x0
-    mov cx, datasegmentend
+    mov cx, data_segment_end
 copyloop:
         mov al, [ds:bx]
         mov [fs:bx], al
@@ -331,7 +331,7 @@ copyloop:
     mov ss, ax
     mov es, ax
     ;; mov cs, ax                   ; we don't move cs as we should still read code from read only
-    mov sp, [ds:normalstack]        ; no recursion it could blow up the ivt
+    mov sp, [ds:normal_stack]        ; no recursion it could blow up the ivt
 
     lidt [_ivt]                     ; setup ivt
     mov ax, 0xf000
@@ -339,9 +339,9 @@ copyloop:
     mov eax, 0x10
     mov cr0, eax
 
-    call setupinteruptcontroller
+    call setup_interupt_controller
     mov di, 0x0
-    call setirqbitmaskline          ; disable programable timer
+    call set_irq_bit_mask_line          ; disable programable timer
     sti                             ; now it seams safe to enable interrupts
     xor ax, ax
     int 0x14                        ; setup serial console
@@ -374,13 +374,13 @@ main:                           ; main is the first stable state where have stac
 
 strlen:
     mov ax, 0
-strlenloop:
+strlen_loop:
         add di, ax
         cmp byte [di], 0
-        jz strlenend
+        jz strlen_end
         inc ax
-        jmp strlenloop
-strlenend:
+        jmp strlen_loop
+strlen_end:
     ret
 
 gets:                           ; slighly modified gets reading til null terminator as chall may contain \n
@@ -388,14 +388,14 @@ gets:                           ; slighly modified gets reading til null termina
                                 ; hope this turns into a CTF chall so actually it's good right?
     call getc
     cmp al, 0xa
-    je getsend
+    je gets_end
     cmp al, 0xd
     je skipcr
     mov [di], al
     skipcr:
     inc di
     jmp gets
-    getsend:
+gets_end:
     inc di
     xor al, al
     mov [di], al
@@ -404,18 +404,18 @@ gets:                           ; slighly modified gets reading til null termina
 puts:
     mov al, 0
     mov si, di
-putsloop:
+puts_loop:
         mov al, [si]
         test al, al
-        jz putsend
+        jz puts_end
         mov di, ax
         call putc
         inc si
-        jmp putsloop
-putsend:
+        jmp puts_loop
+puts_end:
     ret
 
-uartstatus:
+uart_status:
     mov ah, 0x3
     int 0x14
     ret
@@ -423,7 +423,7 @@ uartstatus:
 putc:                           ; for now putc is just uartwrite
                                 ; handle carriage return and oher later/never
 uartwrite:
-    call uartstatus
+    call uart_status
     test al, 0x20
     jz uartwrite
     mov ah, 0x1
@@ -431,10 +431,10 @@ uartwrite:
     ret
 
 getc:                           ; same argument as for putc
-uartread:
-    call uartstatus
+uart_read:
+    call uart_status
     test al, 0x1
-    jz uartread
+    jz uart_read
     mov ah, 0x2
     int 0x14
     ret
