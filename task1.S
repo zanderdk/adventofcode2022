@@ -353,7 +353,7 @@ copyloop:
 
 
 align 0x100
-main:                           ; main is the first stable state where have stack
+main:                           ; main is the first stable state where we have stack
                                 ; and ivt so we can detect erros and simple interupts
                                 ; for io communication with serial
                                 ; mains job is to load the challenge and switch to 64 bit
@@ -366,8 +366,9 @@ main:                           ; main is the first stable state where have stac
     mov di, prompt
     call puts
     mov di, chall_input
+    ;; do jumping here
     call gets
-    mov di, chall_input
+    mov di, chall_input         ; now puts the input buffer as we also use it to store output
     call puts
     mov sp, bp
     pop bp
@@ -457,6 +458,10 @@ times 0x10000-($-$$) db 0       ; pad bios to 0x10000 length
     ;; ivt                      [0x0000:0x0000 - 0x0000:0x03ff]
     ;; global data              [0x0000:0x0400 - 0x0000:0x0fff]
     ;; chall input data         [0x0000:0x1000 - 0x0000:0xffff]
+    ;; l1 page tables           [0x0000:0xd000 - 0x0000:0xdfff]
+    ;; l2 page tables           [0x0000:0xe000 - 0x0000:0xefff]
+    ;; l3 page tables           [0x0000:0xf000 - 0x0000:0xffff]
     ;; ivt jump table           [0xf000:0x1000 - 0xf000:0x17ff]
     ;; io communication code    [0xf000:0x1800 - 0xf000:0x1fff]
     ;; boot and main code       [0xf000:0x2000 - 0xf000:0x2fff]
+    ;; 164 bit code             [0xf000:0x3000 - 0xf000:0xffff]
