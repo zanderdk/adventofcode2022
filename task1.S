@@ -1,10 +1,11 @@
 [bits 16]
 org 0x0                         ; actually this is at 0xf0000 as the code segement register is 0xf000 upon boot
 
+ivtspacing equ 0x8
 ivt:                            ; macro loop for inserting ivt entries
 %assign i 0
 %rep    256
-    dw 0x1000 + i*0x10          ; .data segment cannot be bigger than 0x1000
+    dw 0x1000 + i*ivtspacing          ; .data segment cannot be bigger than 0x1000
     dw 0xf000
 %assign i i+1
 %endrep
@@ -31,170 +32,36 @@ datasegmentend:                 ; code segment starts here and is mapped to code
     cli                         ; no interupts while interupting
     mov ax, i
     jmp inthandler
-    align 0x10
+    align ivtspacing            ; should be enoguh for a jump table
 %assign i i+1
 %endrep
 
 jmp instructionint14handler     ; special handler for serial communication
-align 0x10
+align ivtspacing
 
+%assign i 0
+%rep    (0x100 - 0x15)
+    cli                         ; no interupts while interupting
+    mov ax, (i + 0x15)
+    jmp hwinthandler
+    align ivtspacing
+%assign i i+1
+%endrep
 
-
-align 0x1000                    ; end ivt jump talbe
+align 0x0800                    ; end ivt jump talbe
 
 inthandler:
 mov bx, ax
 mov eax, 0xdea0
 hlt
 
+hwinthandler:
+mov bx, ax
+mov eax, 0xdea1
+hlt
+
     ;; boiler plate done for fault detection ivt
     ;; probably gonna need it for when i divide by 0 or some stupid shit later
-
-instructionint14handler:
-    cld
-    mov [normalstack], sp
-    mov sp, [ivtstack]
-    push di
-    push si
-    push dx
-    mov dx, di
-    mov di, 0x14
-    mov si, ax
-    and si, 0xff00
-    shr si, 8
-    call instructionhandler
-instexit:
-    pop dx
-    pop si
-    pop di
-    mov sp, [normalstack]
-    iret                        ; iret will take care of restoring interuptflag and direction flag?
-
-instructionhandler:
-    cmp di, 0x14
-    jne insterr
-    mov di, si
-    mov si, dx
-    call serialhandle
-    ret
-insterr:
-    mov eax, 0xdea1
-    hlt
-
-UART equ 0x3f8
-
-serialhandle:
-    cmp di, 0x0
-    je serialinit
-    cmp di, 0x2
-    je serialread
-    cmp di, 0x3
-    je serialstatus
-    cmp di, 0x1
-    mov di, si
-    je serialwrite
-    ret
-
-serialinit:
-    push dx
-    mov ax, 0x00
-    mov dx ,(UART + 1)
-    out dx, al                  ; Disable all interrupts
-    mov ax, 0x80
-    mov dx ,(UART + 3)
-    out dx, al                  ; Enable DLAB (set baud rate divisor)
-    mov ax, 0x01
-    mov dx ,(UART + 0)
-    out dx, al                  ; Set divisor to 1 (lo byte) 115200/1 baud
-    mov ax, 0x00
-    mov dx ,(UART + 1)
-    out dx, al                  ; hi byte devisor
-    mov ax, 0x03
-    mov dx ,(UART + 3)
-    out dx, al                  ; 8 bits, no parity, one stop bit
-
-    xor ax, ax
-    mov dx ,(UART + 4)
-    out dx, al                  ; Serial is not faulty 🤞 (we could do loop back test but nah)
-                                ; Put it in normal operation mode
-    pop dx
-    ret
-
-serialcheckfail:
-    mov eax, 0xdea2
-    hlt
-
-serialwrite:
-    push dx
-    mov ax, di
-    mov dx ,(UART + 0)
-    out dx, al
-    pop dx
-    ret
-
-serialread:
-    push dx
-    mov ax, 0x0
-    mov dx ,(UART + 0)
-    in al, dx
-    pop dx
-    ret
-
-serialstatus:
-    push dx
-    mov ax, 0x0
-    mov dx ,(UART + 5)
-    in al, dx
-    pop dx
-    ret
-
-
-boot:
-    cli                             ; disable interupt, nothing works doh.
-    mov ax, 0xf000
-    mov ds, ax                      ; setup data segment
-    mov fs, ax
-    mov gs, ax
-    mov ss, ax
-    mov es, ax
-
-    mov eax, 0x0                    ; copy everything to writeable space
-    mov fs,  ax
-    mov bx, 0x0
-    mov cx, datasegmentend
-copyloop:
-        mov al, [ds:bx]
-        mov [fs:bx], al
-        inc bx
-        dec cx
-        test cx, cx
-        jnz copyloop
-
-    mov ax, 0x0                     ; setup new segments
-    mov ds, ax
-    mov fs, ax
-    mov gs, ax
-    mov ss, ax
-    mov es, ax
-    ;; mov cs, ax                   ; we don't move cs as we should still read code from read only
-    mov sp, [ds:normalstack]        ; no recursion it could blow up the ivt
-
-    lidt [_ivt]                     ; setup ivt
-    mov ax, 0xf000
-    mov fs, ax                      ; done setting up ivt
-    mov eax, 0x10
-    mov cr0, eax
-
-    call setupinteruptcontroller
-    mov di, 0x0
-    call setirqbitmaskline          ; disable programable timer
-    sti                             ; now it seams safe to enable interrupts
-    xor ax, ax
-    int 0x14                        ; setup serial console
-
-    call main                       ; call main
-    mov ax, 0xcafe
-    hlt                             ; halt computer if main exits
 
 iowait:
     push dx
@@ -336,7 +203,162 @@ clearirqmovskip:
     pop dx
     ret
 
-main:                           ; main
+instructionint14handler:
+    cld
+    mov [normalstack], sp
+    mov sp, [ivtstack]
+    push di
+    push si
+    push dx
+    mov dx, di
+    mov di, 0x14
+    mov si, ax
+    and si, 0xff00
+    shr si, 8
+    call instructionhandler
+instexit:
+    pop dx
+    pop si
+    pop di
+    mov sp, [normalstack]
+    iret                        ; iret will take care of restoring interuptflag and direction flag?
+
+instructionhandler:
+    cmp di, 0x14
+    jne insterr
+    mov di, si
+    mov si, dx
+    call serialhandle
+    ret
+insterr:
+    mov eax, 0xdea2
+    hlt
+
+UART equ 0x3f8
+
+serialhandle:
+    cmp di, 0x0
+    je serialinit
+    cmp di, 0x2
+    je serialread
+    cmp di, 0x3
+    je serialstatus
+    cmp di, 0x1
+    mov di, si
+    je serialwrite
+    ret
+
+serialinit:
+    push dx
+    mov ax, 0x00
+    mov dx ,(UART + 1)
+    out dx, al                  ; Disable all interrupts
+    mov ax, 0x80
+    mov dx ,(UART + 3)
+    out dx, al                  ; Enable DLAB (set baud rate divisor)
+    mov ax, 0x01
+    mov dx ,(UART + 0)
+    out dx, al                  ; Set divisor to 1 (lo byte) 115200/1 baud
+    mov ax, 0x00
+    mov dx ,(UART + 1)
+    out dx, al                  ; hi byte devisor
+    mov ax, 0x03
+    mov dx ,(UART + 3)
+    out dx, al                  ; 8 bits, no parity, one stop bit
+
+    xor ax, ax
+    mov dx ,(UART + 4)
+    out dx, al                  ; Serial is not faulty 🤞 (we could do loop back test but nah)
+                                ; Put it in normal operation mode
+    pop dx
+    ret
+
+serialcheckfail:
+    mov eax, 0xdea3
+    hlt
+
+serialwrite:
+    push dx
+    mov ax, di
+    mov dx ,(UART + 0)
+    out dx, al
+    pop dx
+    ret
+
+serialread:
+    push dx
+    mov ax, 0x0
+    mov dx ,(UART + 0)
+    in al, dx
+    pop dx
+    ret
+
+serialstatus:
+    push dx
+    mov ax, 0x0
+    mov dx ,(UART + 5)
+    in al, dx
+    pop dx
+    ret
+
+align 0x1000                       ; io code ends here
+
+boot:
+    cli                             ; disable interupt, nothing works doh.
+    mov ax, 0xf000
+    mov ds, ax                      ; setup data segment
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+    mov es, ax
+
+    mov eax, 0x0                    ; copy everything to writeable space
+    mov fs,  ax
+    mov bx, 0x0
+    mov cx, datasegmentend
+copyloop:
+        mov al, [ds:bx]
+        mov [fs:bx], al
+        inc bx
+        dec cx
+        test cx, cx
+        jnz copyloop
+
+    mov ax, 0x0                     ; setup new segments
+    mov ds, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+    mov es, ax
+    ;; mov cs, ax                   ; we don't move cs as we should still read code from read only
+    mov sp, [ds:normalstack]        ; no recursion it could blow up the ivt
+
+    lidt [_ivt]                     ; setup ivt
+    mov ax, 0xf000
+    mov fs, ax                      ; done setting up ivt
+    mov eax, 0x10
+    mov cr0, eax
+
+    call setupinteruptcontroller
+    mov di, 0x0
+    call setirqbitmaskline          ; disable programable timer
+    sti                             ; now it seams safe to enable interrupts
+    xor ax, ax
+    int 0x14                        ; setup serial console
+
+    call main                       ; call main
+    mov ax, 0xcafe
+    hlt                             ; halt computer if main exits
+
+
+align 0x100
+main:                           ; main is the first stable state where have stack
+                                ; and ivt so we can detect erros and simple interupts
+                                ; for io communication with serial
+                                ; mains job is to load the challenge and switch to 64 bit
+                                ; where we solve the challenge
+                                ; and output result when done in 64bit mode as we don't have io
+                                ; in 64 bit mode and im not setting up yet another idt!!
     push bp
     mov bp, sp
     sub sp, 0x20
@@ -361,7 +383,8 @@ strlenloop:
 strlenend:
     ret
 
-gets:                           ; yee I know it's dangerous
+gets:                           ; slighly modified gets reading til null terminator as chall may contain \n
+                                ;yee I know it's dangerous
                                 ; hope this turns into a CTF chall so actually it's good right?
     call getc
     cmp al, 0xa
