@@ -450,3 +450,11 @@ jmp 0xf000:boot                 ; far jmp instruction to boot sequence
 
 times 0x10000-($-$$) db 0       ; pad bios to 0x10000 length
                                 ; python startup will prepend 0x30000
+
+    ;; memory layout:
+    ;;
+    ;; ivt                      [0x0000:x0000 - 0x0000:0x03ff]
+    ;; global data              [0x0000:x0400 - 0x0000:0x0fff]
+    ;; ivt jump table           [0xf000:x1000 - 0xf000:0x17ff]
+    ;; io communication code    [0xf000:x1800 - 0xf000:0x1fff]
+    ;; boot and main code       [0xf000:x2000 - 0xf000:0x2fff]
