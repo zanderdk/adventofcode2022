@@ -387,7 +387,7 @@ gets:                           ; slighly modified gets reading til null termina
                                 ;yee I know it's dangerous
                                 ; hope this turns into a CTF chall so actually it's good right?
     call getc
-    cmp al, 0xa
+    cmp al, 0x00
     je gets_end
     cmp al, 0xd
     je skipcr

@@ -52,6 +52,8 @@ if args["ATTACH"]:
     gdbcmd = f'gdb -ix "./gdb_init_real_mode.txt" -ex "set tdesc filename ./target.xml" -x {gdbscriptf.name}'
     run_in_new_terminal(gdbcmd, preexec_fn = None)
 
+io.send(b"aaaa\n\x00")
+
 io.interactive()
 io.close()
 if gdbscriptf is not None:
