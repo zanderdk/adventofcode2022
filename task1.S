@@ -22,9 +22,10 @@ ivt_stack:
 prompt:
     db '> ',0
 
-align 0x1000                    ; actually data segment must be exactly 0x1000
+align 0x1000                      ; actually data segment must be exactly 0x1000
 data_segment_end:                 ; code segment starts here and is mapped to code selector 0xf000
-                                ; code go brrr:
+                                  ; code go brrr:
+chall_input:
 
     ;;  ivt jump talbe here
 %assign i 0
@@ -364,9 +365,9 @@ main:                           ; main is the first stable state where have stac
     sub sp, 0x20
     mov di, prompt
     call puts
-    mov di, sp
+    mov di, chall_input
     call gets
-    mov di, sp
+    mov di, chall_input
     call puts
     mov sp, bp
     pop bp
@@ -453,8 +454,9 @@ times 0x10000-($-$$) db 0       ; pad bios to 0x10000 length
 
     ;; memory layout:
     ;;
-    ;; ivt                      [0x0000:x0000 - 0x0000:0x03ff]
-    ;; global data              [0x0000:x0400 - 0x0000:0x0fff]
-    ;; ivt jump table           [0xf000:x1000 - 0xf000:0x17ff]
-    ;; io communication code    [0xf000:x1800 - 0xf000:0x1fff]
-    ;; boot and main code       [0xf000:x2000 - 0xf000:0x2fff]
+    ;; ivt                      [0x0000:0x0000 - 0x0000:0x03ff]
+    ;; global data              [0x0000:0x0400 - 0x0000:0x0fff]
+    ;; chall input data         [0x0000:0x1000 - 0x0000:0xffff]
+    ;; ivt jump table           [0xf000:0x1000 - 0xf000:0x17ff]
+    ;; io communication code    [0xf000:0x1800 - 0xf000:0x1fff]
+    ;; boot and main code       [0xf000:0x2000 - 0xf000:0x2fff]
