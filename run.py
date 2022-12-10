@@ -30,7 +30,9 @@ with open("./bios.bin", "wb") as bios_out:
     bios_out.write(out)
     bios_out.flush()
 
-cmd = "qemu-system-i386 -bios ./bios.bin -net none -cpu base -monitor none -no-reboot -nographic -serial stdio -s"
+cmd = "qemu-system-x86_64 -bios ./bios.bin -net none -cpu qemu64,+smep,+smap -monitor none -no-reboot -nographic -serial stdio -s"
+if args["ATTACH"]:
+    cmd = "qemu-system-i386 -bios ./bios.bin -net none -cpu base -monitor none -no-reboot -nographic -serial stdio -s"
 print(cmd)
 cmd = cmd.split(" ")
 
@@ -42,10 +44,16 @@ set $main = 0xf1164
 
 gdbscriptf = None
 if not args["GDB"]:
-    if args["ATTACH"]:
+    if args["ATTACH"] or args["ATTACH_LONG"]:
         cmd = cmd + ["-S"]
     io: process = process(cmd, stdout=PIPE, stdin=PIPE, stderr=PIPE)
-if args["ATTACH"]:
+if args["ATTACH_LONG"]:
+    gdbscriptf = tempfile.NamedTemporaryFile(suffix = '.gdb')
+    gdbscriptf.write(gdbscript.encode())
+    gdbscriptf.flush()
+    gdbcmd = f'gdb -x {gdbscriptf.name}'
+    run_in_new_terminal(gdbcmd, preexec_fn = None)
+elif args["ATTACH"]:
     gdbscriptf = tempfile.NamedTemporaryFile(suffix = '.gdb')
     gdbscriptf.write(gdbscript.encode())
     gdbscriptf.flush()
