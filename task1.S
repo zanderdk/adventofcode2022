@@ -1,6 +1,31 @@
 [bits 16]
 org 0x0                         ; actually this is at 0xf0000 as the code segement register is 0xf000 upon boot
 
+    ;; nice macros
+%imacro save16regs 0
+    push bp
+    push ax
+    push bx
+    push cx
+    push dx
+    push di
+    push si
+    push bp
+%endmacro
+
+%imacro restore16regs 0
+    pop bp
+    pop si
+    pop di
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    pop bp
+%endmacro
+
+;; end macros
+
 ivt_spacing equ 0x8
 ivt:                            ; macro loop for inserting ivt entries
 %assign i 0
@@ -15,19 +40,22 @@ _ivt:
     dd 0x0                      ; base idt
 
 normal_stack:
-    dw 0x7000
+    dw 0xa000
 ivt_stack:
-    dw 0x8000
+    dw 0xb000
+retval64:
+    dw 0x000
 
 align 0x20
 gdtr:                           ;gdt for 64 bit
-dw 8 * 3 - 1                    ;3 is number of segments
+dw 8 * 4 - 1                    ;4 is number of segments
 dd gdt
 
 gdt:
 dq 0x0000000000000000 ; null segment (x86 spec needs it)
-dq 0x00A09A0000000000 ; 64 bit code segment
+dq 0x00Af9A000000ffff ; 64 bit code segment
 dq 0x001f9A000000ffff ; here we clear the 64bit flag and 32bit flag and set a limit
+dq 0x00cf93000000ffff ; stack
 
 times 0x500-($-$$) db 0         ;getting fixed addr for bits64 function
 
@@ -36,23 +64,40 @@ bits64:                         ;crazy hack puting code in data but we need
                                 ;small snippet in lower address space as jmp
                                 ;only takes a 16bit val so we cant set rip
                                 ;directly to 0xfxxxx
-    jmp (solve + 0xf0000)
+    and rdi, 0x000000000000ffff
+    mov ax, 0x18
+    mov ss, ax
+    mov rsp, 0xfff000
+    add rdi, 0xf0000
+    call rdi
+    jmp (exit + 0xf0000)
+
 
 [bits 16]
 exit_trampoline:
     mov eax, cr0
-    and eax, 0xfffffffe
+    and eax, 0xfffffffe         ; disable protected mode
     mov cr0, eax
     jmp 0x0:page_disable
 
 page_disable:
     mov eax, cr0
-    and eax, 0x7fffffff
+    and eax, 0x7fffffff         ; disable paging
     mov cr0, eax
     jmp 0xf000:exit_restore_regs
 
 exit_restore_regs:
-    jmp $
+    mov ax, 0x0
+    mov ss, ax
+    mov sp, [normal_stack]        ; save old rsp
+    restore16regs
+    mov ax, 0xf000
+    sti                           ; enable interupts again
+    jmp 0xf000:retback
+
+retback:
+    mov ax, [retval64]
+    ret
 
 prompt:
     db '> ',0
@@ -60,7 +105,7 @@ prompt:
 align 0x1000                      ; actually data segment must be exactly 0x1000
 data_segment_end:                 ; code segment starts here and is mapped to code selector 0xf000
                                   ; code go brrr:
-chall_input:
+chall_in_out:
 
     ;;  ivt jump talbe here
 %assign i 0
@@ -400,28 +445,28 @@ main:                           ; main is the first stable state where we have s
     sub sp, 0x20
     mov di, prompt
     call puts
-    mov di, chall_input         ; now puts the input buffer as we also use it to store output
-    ;; call gets
+    mov di, chall_in_out         ; now puts the input buffer as we also use it to store output
+    call gets
     call setup_paging
-    cli                         ;no interupts from here!
-    call go_64bit
-
-exit_taget:
-    mov eax, 0xcafebabe
-    jmp $
-    sti                         ; back in safe space
-    mov di, chall_input         ; now puts the input buffer as we also use it to store output
+    mov di, solve
+    call call64bit
+    mov di,chall_in_out
     call puts
-    hlt
+    mov sp, bp
+    pop bp
+    ret
 
-go_64bit:
-    mov eax, 0xd000
+call64bit:
+    cli                         ; no interupts from here!
+    save16regs
+    mov [normal_stack], sp        ; save old rsp
+    mov eax, 0xd000             ; point cr3 to page tables
     mov cr3, eax
 
-    lgdt [gdtr]
+    lgdt [gdtr]                 ; load global descriptor table
 
     mov eax, cr4
-    or al, (1 << 5)
+    or al, (1 << 5)             ; enable PAE
     mov cr4, eax
 
     mov ecx, 0xC0000080          ; Set the C-register to 0xC0000080, which is the EFER MSR.
@@ -432,7 +477,7 @@ go_64bit:
     mov eax, cr0
     or eax, 0x80000011
     mov cr0, eax
-    jmp 0x08:bits64              ;crazy hack to hit jump trapoline for 64bit mode
+    jmp 0x08:bits64              ; crazy hack to hit jump trapoline for 64bit mode
     mov ax, 0xbeef
     hlt
 
@@ -535,13 +580,18 @@ align 0x1000
     ;; here we write the 64 bit code segment
 [bits 64]
 solve:                          ;we are in long mode!!!!!
-    mov rbp, rsp
-    and rsp, 0xfffffffffffff000
-    sub rsp, 0x10
     push rbp
+    mov rbp, rsp
+    sub rsp, 0x10
+    mov rax, 0xcafe
+    ;; solve code here
+    mov rsp, rbp
+    pop rbp
+    ret
 
 exit:
     ;; jmp $
+    mov [retval64], ax
     xor rax, rax                ; ss
     push ax
     mov rax, 0x8000             ; rsp
@@ -560,8 +610,6 @@ exit:
                                  ; set LME = 0
 
 
-    ;; mov rax, 0x80000010         ; clear PE
-    ;; mov cr0, rax
     iretq                       ; jmp exit_trampoline
 
 
@@ -583,10 +631,14 @@ times 0x10000-($-$$) db 0       ; pad bios to 0x10000 length
     ;; ivt                      [0x0000:0x0000 - 0x0000:0x03ff]
     ;; global data              [0x0000:0x0400 - 0x0000:0x0fff]
     ;; chall input data         [0x0000:0x1000 - 0x0000:0xffff]
+    ;; normal 16bit stack       [0x0000:0xa000 - 0x0000:0xafff]
+    ;; interrupt stack          [0x0000:0xb000 - 0x0000:0xbfff]
     ;; l1 page tables           [0x0000:0xd000 - 0x0000:0xdfff]
     ;; l2 page tables           [0x0000:0xe000 - 0x0000:0xefff]
     ;; l3 page tables           [0x0000:0xf000 - 0x0000:0xffff]
     ;; ivt jump table           [0xf000:0x1000 - 0xf000:0x17ff]
     ;; io communication code    [0xf000:0x1800 - 0xf000:0x1fff]
     ;; boot and main code       [0xf000:0x2000 - 0xf000:0x2fff]
-    ;; 164 bit code             [0xf000:0x3000 - 0xf000:0xffff]
+    ;; 64 bit code              [0xf000:0x3000 - 0xf000:0xffff]
+    ;;
+    ;; 64 bit stack             [0xfff000] paging
