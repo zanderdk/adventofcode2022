@@ -21,13 +21,13 @@ ivt_stack:
 
 align 0x20
 gdtr:                           ;gdt for 64 bit
-dw 8 * 2 - 1
-dd gdt - 8
-dw 0x0
-dd 0x0
+dw 8 * 3 - 1                    ;3 is number of segments
+dd gdt
 
 gdt:
-  dq 0x00A09A0000000000
+dq 0x0000000000000000 ; null segment (x86 spec needs it)
+dq 0x00A09A0000000000 ; 64 bit code segment
+dq 0x001f9A000000ffff ; here we clear the 64bit flag and 32bit flag and set a limit
 
 times 0x500-($-$$) db 0         ;getting fixed addr for bits64 function
 
@@ -38,9 +38,21 @@ bits64:                         ;crazy hack puting code in data but we need
                                 ;directly to 0xfxxxx
     jmp (solve + 0xf0000)
 
-exit64:                         ; yee another ugly hack
-
 [bits 16]
+exit_trampoline:
+    mov eax, cr0
+    and eax, 0xfffffffe
+    mov cr0, eax
+    jmp 0x0:page_disable
+
+page_disable:
+    mov eax, cr0
+    and eax, 0x7fffffff
+    mov cr0, eax
+    jmp 0xf000:exit_restore_regs
+
+exit_restore_regs:
+    jmp $
 
 prompt:
     db '> ',0
@@ -389,11 +401,14 @@ main:                           ; main is the first stable state where we have s
     mov di, prompt
     call puts
     mov di, chall_input         ; now puts the input buffer as we also use it to store output
-    call gets
+    ;; call gets
     call setup_paging
     cli                         ;no interupts from here!
     call go_64bit
+
 exit_taget:
+    mov eax, 0xcafebabe
+    jmp $
     sti                         ; back in safe space
     mov di, chall_input         ; now puts the input buffer as we also use it to store output
     call puts
@@ -417,7 +432,7 @@ go_64bit:
     mov eax, cr0
     or eax, 0x80000011
     mov cr0, eax
-    jmp 0x08:0x500              ;crazy hack to hit jump trapoline for 64bit mode
+    jmp 0x08:bits64              ;crazy hack to hit jump trapoline for 64bit mode
     mov ax, 0xbeef
     hlt
 
@@ -520,8 +535,36 @@ align 0x1000
     ;; here we write the 64 bit code segment
 [bits 64]
 solve:                          ;we are in long mode!!!!!
-    mov rax, 0xdeadbeefcafebabe
-    jmp $
+    mov rbp, rsp
+    and rsp, 0xfffffffffffff000
+    sub rsp, 0x10
+    push rbp
+
+exit:
+    ;; jmp $
+    xor rax, rax                ; ss
+    push ax
+    mov rax, 0x8000             ; rsp
+    push ax
+    mov rax, 0                  ; rflags
+    push rax
+    mov rax, 0x10               ; cs
+    push rax
+    mov rax, exit_trampoline
+    push rax                    ; rip
+
+    mov rcx, 0xC0000080          ; Set the C-register to 0xC0000080, which is the EFER MSR.
+    rdmsr                        ; Read from the model-specific register.
+    mov rax, 0x0
+    wrmsr                        ; Write to the model-specific register.
+                                 ; set LME = 0
+
+
+    ;; mov rax, 0x80000010         ; clear PE
+    ;; mov cr0, rax
+    iretq                       ; jmp exit_trampoline
+
+
 
 times 0xfff0-($-$$) db 0        ; The reset address of x86 cpus 0xf000:0xffff0 cs:eip or ip as we are in 16bit real mode
                                 ; First addresse ever executed upon boot
