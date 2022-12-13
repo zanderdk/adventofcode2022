@@ -69,7 +69,9 @@ bits64:                         ;crazy hack puting code in data but we need
     mov ss, ax
     mov rsp, 0xfff000
     add rdi, 0xf0000
-    call rdi
+    mov rax, rdi
+    mov rdi, rsi
+    call rax
     jmp (exit + 0xf0000)
 
 
@@ -100,7 +102,7 @@ retback:
     ret
 
 prompt:
-    db '> ',0
+    db '> ', 0
 
 align 0x1000                      ; actually data segment must be exactly 0x1000
 data_segment_end:                 ; code segment starts here and is mapped to code selector 0xf000
@@ -449,6 +451,7 @@ main:                           ; main is the first stable state where we have s
     call gets
     call setup_paging
     mov di, solve
+    mov si, chall_in_out
     call call64bit
     mov di,chall_in_out
     call puts
@@ -579,15 +582,92 @@ align 0x1000
 
     ;; here we write the 64 bit code segment
 [bits 64]
-solve:                          ;we are in long mode!!!!!
+solve:                          ; we are in long mode!!!!!
+                                ; input in rdi
     push rbp
     mov rbp, rsp
-    sub rsp, 0x10
-    mov rax, 0xcafe
-    ;; solve code here
+    push 0x0
+    mov rbx, 0x0a
+    xor rsi, rsi
+solve_loop:
+    test byte [rdi], 0xff
+    jz solve_end
+    cmp [rdi], bl
+    jz next
+    call strtoul
+    add rsi, rax
+    jmp solve_loop
+
+next:
+    push rsi
+    inc rdi
+    xor rsi, rsi
+    cmp [rdi], bl
+    je solve_end
+    jmp solve_loop
+
+solve_end:
+    push rsi
+    mov rdi, 0x1000
+    mov rsi, 0x0030303030303030
+    mov qword [rdi], rsi
+    ;; find biggest
+
+    push 0
+    pop rsi
+pop_loop:
+    pop rax
+    test rax, rax
+    jz pop_end
+    cmp rax, rsi
+    cmova rsi, rax
+    jmp pop_loop
+
+pop_end:
+    mov rdi, 0x1006
+    call to_ascii
     mov rsp, rbp
     pop rbp
     ret
+
+strtoul:
+    xor rax, rax
+    xor rcx, rcx
+strtoul_loop:
+    mov cl, [rdi]
+    cmp cl, 0x0a
+    je strtoul_end
+    imul rax, 10
+    sub rcx, '0'
+    add rax, rcx
+    inc rdi
+    jmp strtoul_loop
+strtoul_end:
+    inc rdi
+    ret
+
+to_ascii:
+    push rbp
+to_ascii_loop:
+    xor rax, rax
+    xor rdx, rdx
+    mov rax, rsi
+    mov rdx, 0x00
+    push 10
+    pop rcx
+    div rcx
+    mov rsi, rax
+    mov rbp, rdx
+    add rbp, '0'
+    xchg rax, rbp
+    mov byte [rdi], al
+    xchg rax, rbp
+    dec rdi
+    cmp rax, 0x0
+    jne to_ascii_loop
+    pop rbp
+    ret
+
 
 exit:
     ;; jmp $
@@ -641,4 +721,4 @@ times 0x10000-($-$$) db 0       ; pad bios to 0x10000 length
     ;; boot and main code       [0xf000:0x2000 - 0xf000:0x2fff]
     ;; 64 bit code              [0xf000:0x3000 - 0xf000:0xffff]
     ;;
-    ;; 64 bit stack             [0xfff000] paging
+    ;; 64 bit stack             [0xfff000] paging (not in range from 16 bit so segmented addr makes no sence)

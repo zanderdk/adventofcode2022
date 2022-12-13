@@ -60,7 +60,22 @@ elif args["ATTACH"]:
     gdbcmd = f'gdb -ix "./gdb_init_real_mode.txt" -ex "set tdesc filename ./target.xml" -x {gdbscriptf.name}'
     run_in_new_terminal(gdbcmd, preexec_fn = None)
 
-io.send(b"aaaa\n\x00")
+inp = b"""1000
+2000
+3000
+
+4000
+
+5000
+6000
+
+7000
+8000
+9000
+
+12345
+\x00"""
+io.send(inp)
 
 io.interactive()
 io.close()
