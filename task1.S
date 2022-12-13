@@ -2,7 +2,7 @@
 org 0x0                         ; actually this is at 0xf0000 as the code segement register is 0xf000 upon boot
 
     ;; nice macros
-%imacro save16regs 0
+%imacro save16regs 0            ; helper macro for push all regs
     push bp
     push ax
     push bx
@@ -13,7 +13,7 @@ org 0x0                         ; actually this is at 0xf0000 as the code segeme
     push bp
 %endmacro
 
-%imacro restore16regs 0
+%imacro restore16regs 0         ; yee restore them
     pop bp
     pop si
     pop di
@@ -453,7 +453,11 @@ main:                           ; main is the first stable state where we have s
     mov di, solve
     mov si, chall_in_out
     call call64bit
-    mov di,chall_in_out
+    mov di ,chall_in_out
+    call puts
+    mov di, prompt
+    call puts
+    mov di, 0x1400
     call puts
     mov sp, bp
     pop bp
@@ -586,6 +590,13 @@ solve:                          ; we are in long mode!!!!!
                                 ; input in rdi
     push rbp
     mov rbp, rsp
+    xor rax, rax
+    xor rdx, rdx
+    rdtsc
+    shl rdx, 32
+    or rax, rdx
+    push rax
+
     push 0x0
     mov rbx, 0x0a
     xor rsi, rsi
@@ -611,7 +622,6 @@ solve_end:
     mov rdi, 0x1000
     mov rsi, 0x0030303030303030
     mov qword [rdi], rsi
-    ;; find biggest
 
     push 0
     pop rsi
@@ -626,6 +636,23 @@ pop_loop:
 pop_end:
     mov rdi, 0x1006
     call to_ascii
+    rdtsc
+    shl rdx, 32
+    or rax, rdx
+    mov rbx, rax
+    pop rax
+    xchg rax, rbx
+    sub rax, rbx
+
+
+    mov rdi, 0x1400
+    mov rsi, 0x0030303030303030
+    mov qword [rdi], rsi
+
+    mov rsi, rax
+    mov rdi, 0x1406
+    call to_ascii
+
     mov rsp, rbp
     pop rbp
     ret
@@ -668,7 +695,6 @@ to_ascii_loop:
     pop rbp
     ret
 
-
 exit:
     ;; jmp $
     mov [retval64], ax
@@ -689,9 +715,7 @@ exit:
     wrmsr                        ; Write to the model-specific register.
                                  ; set LME = 0
 
-
     iretq                       ; jmp exit_trampoline
-
 
 
 times 0xfff0-($-$$) db 0        ; The reset address of x86 cpus 0xf000:0xffff0 cs:eip or ip as we are in 16bit real mode
