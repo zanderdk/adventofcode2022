@@ -1,7 +1,51 @@
 [bits 16]
-org 0x0                         ; actually this is at 0xf0000 as the code segement register is 0xf000 upon boot
+org 0x0                         ; actually this is at 0xf0000 for boot code (the rest will be relocated)
 
-    ;; nice macros
+;; memory layout:
+;;
+;; ivt                      [0x0000:0x0000 - 0x0000:0x03ff]
+;; global data              [0x0000:0x0400 - 0x0000:0x0fff]
+;; chall input data         [0x0000:0x1000 - 0x0000:0xffff]
+;; ivt jump table           [0x0000:0x7000 - 0x0000:0x77ff]
+;; io code                  [0x0000:0x7800 - 0x0000:0x7fff]
+;; main code                [0x0000:0x7c00 - 0xf000:0x9fff]
+;; normal 16bit stack       [0x0000:0xa000 - 0x0000:0xafff]
+;; interrupt stack          [0x0000:0xb000 - 0x0000:0xbfff]
+;; l1 page tables           [0x0000:0xd000 - 0x0000:0xdfff]
+;; l2 page tables           [0x0000:0xe000 - 0x0000:0xefff]
+;; l3 page tables           [0x0000:0xf000 - 0x0000:0xffff]
+;; boot code                [0xf000:0x0000 - 0x0000:0x2fff]
+;;
+;; 64 bit stack             [0x200000]  paging (not in range from 16 bit so segmented addr makes no sence)
+;; 64 bit stack             [0xfff000]  paging same 10k stack should be enough
+
+    ;; some very important global defines
+ivt_spacing     equ 0x8
+chall_in_out    equ 0x1000
+
+UART equ 0x3f8
+
+    ;; Interupt controller defines:
+PIC1 equ 0x20
+PIC2 equ 0xa0
+PIC1_COMMAND equ PIC1
+PIC2_COMMAND equ PIC2
+PIC1_DATA equ (PIC1+1)
+PIC2_DATA equ (PIC2+1)
+
+ICW1_ICW4 equ 0x01
+ICW1_SINGLE equ 0x2
+ICW1_INTERVAL4 equ 0x4
+ICW1_LEVEL equ 0x8
+ICW1_INIT equ 0x10
+
+ICW4_8086 equ 0x1
+ICW4_AUTO equ 0x2
+ICW4_BUF_SLAVE equ 0x8
+ICW4_BUF_MASTER equ 0xc
+ICW4_SFNM equ 0xc
+
+    ;; nice macros:
 %imacro save16regs 0            ; helper macro for push all regs
     push bp
     push ax
@@ -24,29 +68,35 @@ org 0x0                         ; actually this is at 0xf0000 as the code segeme
     pop bp
 %endmacro
 
-;; end macros
+%imacro zeroselectors 0
+    mov eax, 0x0
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+    mov es, ax
+    mov fs, ax
+    mov ds, ax
+%endmacro
 
-ivt_spacing equ 0x8
+
+;; end macros
+;;
+;; ////         addr: 0x0000:0x0000
+
 ivt:                            ; macro loop for inserting ivt entries
 %assign i 0
 %rep    256
-    dw 0x1000 + i*ivt_spacing          ; .data segment cannot be bigger than 0x1000
-    dw 0xf000
+    dw 0x7000 + i*ivt_spacing          ; .data segment cannot be bigger than 0x1000
+    dw 0x0000
 %assign i i+1
 %endrep
+
+;; ////         addr: 0x0000:0x0400
 
 _ivt:
     dd 0x3ff                    ; limit idt
     dd 0x0                      ; base idt
 
-normal_stack:
-    dw 0xa000
-ivt_stack:
-    dw 0xb000
-retval64:
-    dw 0x000
-
-align 0x20
 gdtr:                           ;gdt for 64 bit
 dw 8 * 4 - 1                    ;4 is number of segments
 dd gdt
@@ -57,22 +107,56 @@ dq 0x00Af9A000000ffff ; 64 bit code segment
 dq 0x001f9A000000ffff ; here we clear the 64bit flag and 32bit flag and set a limit
 dq 0x00cf93000000ffff ; stack
 
-times 0x500-($-$$) db 0         ;getting fixed addr for bits64 function
+normal_stack:
+    dw 0xa000
+ivt_stack:
+    dw 0xb000
+retval64:
+    dw 0x000
+
+prompt:
+    db '> ', 0
 
 [bits 64]
-bits64:                         ;crazy hack puting code in data but we need
-                                ;small snippet in lower address space as jmp
-                                ;only takes a 16bit val so we cant set rip
-                                ;directly to 0xfxxxx
+bits64:                         ; crazy hack puting code in data but we need
+                                ; small snippet in lower address space as jmp
+                                ; only takes a 16bit val so we cant set rip
+                                ; directly to to higer addess space and we need no
+                                ; offset calulations when this code lives in lowest
+                                ; possible address space
     and rdi, 0x000000000000ffff
     mov ax, 0x18
     mov ss, ax
     mov rsp, 0xfff000
-    add rdi, 0xf0000
+    add rdi, 0x200000           ; add relocation offset
+    sub rdi, 0x2000             ; substract rom offset
+                                ; eg function at 0x205a maps to -> 0x20005a
+                                ; but this fuction will be called with 0x205a
     mov rax, rdi
     mov rdi, rsi
     call rax
-    jmp (exit + 0xf0000)
+
+    ;; exit from 64bit code starts here
+    mov [retval64], ax
+    xor rax, rax                ; ss
+    push ax
+    mov rax, 0x8000             ; rsp
+    push ax
+    mov rax, 0                  ; rflags
+    push rax
+    mov rax, 0x10               ; cs
+    push rax
+    mov rax, exit_trampoline
+    push rax                    ; rip
+
+    mov rcx, 0xC0000080          ; Set the C-register to 0xC0000080, which is the EFER MSR.
+    rdmsr                        ; Read from the model-specific register.
+    mov rax, 0x0
+    hlt
+    wrmsr                        ; Write to the model-specific register.
+                                 ; set LME = 0
+
+    iretq                       ; jmp exit_trampoline
 
 
 [bits 16]
@@ -86,30 +170,28 @@ page_disable:
     mov eax, cr0
     and eax, 0x7fffffff         ; disable paging
     mov cr0, eax
-    jmp 0xf000:exit_restore_regs
+    jmp 0x0000:exit_restore_regs
 
 exit_restore_regs:
-    mov ax, 0x0
-    mov ss, ax
+    zeroselectors                 ; we are back in real mode all selectors can be reset
     mov sp, [normal_stack]        ; save old rsp
     restore16regs
-    mov ax, 0xf000
-    sti                           ; enable interupts again
-    jmp 0xf000:retback
+    jmp 0x0000:retback
 
 retback:
     mov ax, [retval64]
+    sti                           ; enable interupts again
     ret
 
-prompt:
-    db '> ', 0
+data_segment_end:               ; code segment starts here and is mapped to code selector 0xf000
+times 0x1000-($-$$) db 0       ; align code area
+bios_code_here:                 ; this is the bios code we will move from flash to ram
 
-align 0x1000                      ; actually data segment must be exactly 0x1000
-data_segment_end:                 ; code segment starts here and is mapped to code selector 0xf000
-                                  ; code go brrr:
-chall_in_out:
 
-    ;;  ivt jump talbe here
+
+;;  ivt jump talbe here
+;;  this area is moved to 0x7000
+code_relocation_start:
 %assign i 0
 %rep    0x14
     cli                         ; no interupts while interupting
@@ -130,23 +212,91 @@ align ivt_spacing
     align ivt_spacing
 %assign i i+1
 %endrep
-
-align 0x0800                    ; end ivt jump talbe
-
-int_handler:
-mov bx, ax
-mov eax, 0xdea0
-hlt
-
-hw_int_handler:
-mov bx, ax
-mov eax, 0xdea1
-hlt
-
     ;; boiler plate done for fault detection ivt
     ;; probably gonna need it for when i divide by 0 or some stupid shit later
 
-io_wait:
+align 0x800
+
+boot:
+    cli                             ; disable interupt, nothing works doh.
+    mov ax, 0x0000
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+    mov es, ax
+    mov fs, ax
+    mov ds, ax                      ; setup data segment even though we haven moved globals
+                                    ; relocation can take care of that after using 32bit regs
+
+    mov sp, [cs:normal_stack]       ; setup stack using code selector as it's the only segment
+                                    ; still pointing to flash address space
+                                    ; no recursion it could blow up the ivt
+
+    mov edi, 0x0
+    mov esi, 0xf0000
+    mov ecx, 0x1000
+    call relocate_memcpy            ; relocated ivt and globals
+
+    mov edi, 0x7000
+    mov esi, (0xf0000 +  code_relocation_start)
+    mov ecx, (code_relocation_end - code_relocation_start)
+    call relocate_memcpy            ; relocated ivt and globals
+
+    mov edi, 0x200000
+    mov esi, (0xf0000 + code_relocation_64_start)
+    mov ecx, (code_relocation_64_end - code_relocation_64_start)
+    call relocate_memcpy            ; relocated ivt and globals
+
+    ; getting cs = 0
+    ; now code is relocated and this is a far jmp so we need absolute addr
+    ; which so we need to calc the relocated address lucky this is
+    ; a not issue for near jmp's
+    jmp 0x0:(after_relocation - code_relocation_start + 0x7000)
+after_relocation:
+    lidt [_ivt]                     ; setup ivt
+
+
+    ; Disable IRQs
+    mov al, 0xFF                    ; Out 0xFF to 0xA1 and 0x21 to disable all IRQs.
+                                    ; only do this while debugging
+                                    ; (not every code part can be debugged like this but makes some easier)
+    out 0xA1, al
+    out 0x21, al
+
+    ;; call setup_interupt_controller ;do this when not debugging
+    ;; mov di, 0x0
+    ;; call set_irq_bit_mask_line      ; disable programable timer
+
+    sti                             ; now it seams safe to enable interrupts
+    xor ax, ax
+    int 0x14                        ; setup serial console
+
+    call main                       ; call main
+    mov ax, 0xcafe
+    hlt                             ; halt computer if main exits
+
+relocate_memcpy:                ;source: esi, target: edi, count: ecx
+                                ;yes we can use 32bit regs but not 32 bit BUS
+    mov al, [esi]
+    mov [edi], al
+    inc esi
+    inc edi
+    dec ecx
+    test ecx, ecx
+    jnz relocate_memcpy
+    ret
+
+int_handler:
+    mov bx, ax
+    mov eax, 0xdea0
+    hlt
+
+hw_int_handler:
+    mov bx, ax
+    mov eax, 0xdea1
+    hlt
+
+io_wait:                           ; small sleep routine for io handling
     push dx
     push ax
     mov dx, 0x80
@@ -155,25 +305,6 @@ io_wait:
     pop ax
     pop dx
     ret
-
-PIC1 equ 0x20
-PIC2 equ 0xa0
-PIC1_COMMAND equ PIC1
-PIC2_COMMAND equ PIC2
-PIC1_DATA equ (PIC1+1)
-PIC2_DATA equ (PIC2+1)
-
-ICW1_ICW4 equ 0x01
-ICW1_SINGLE equ 0x2
-ICW1_INTERVAL4 equ 0x4
-ICW1_LEVEL equ 0x8
-ICW1_INIT equ 0x10
-
-ICW4_8086 equ 0x1
-ICW4_AUTO equ 0x2
-ICW4_BUF_SLAVE equ 0x8
-ICW4_BUF_MASTER equ 0xc
-ICW4_SFNM equ 0xc
 
 setup_interupt_controller:        ; init pic 8259a
     push ax
@@ -317,8 +448,6 @@ inst_err:
     mov eax, 0xdea2
     hlt
 
-UART equ 0x3f8
-
 serial_handle:
     cmp di, 0x0
     je serial_init
@@ -384,60 +513,12 @@ serial_status:
     pop dx
     ret
 
-align 0x1000                       ; io code ends here
+align 0x400                     ; previos allign ment was at 0x800 so this align will force code
+                                ; from here to be at 0x7c00 (after relocation)
 
-boot:
-    cli                             ; disable interupt, nothing works doh.
-    mov ax, 0xf000
-    mov ds, ax                      ; setup data segment
-    mov fs, ax
-    mov gs, ax
-    mov ss, ax
-    mov es, ax
-
-    mov eax, 0x0                    ; copy everything to writeable space
-    mov fs,  ax
-    mov bx, 0x0
-    mov cx, data_segment_end
-copyloop:
-        mov al, [ds:bx]
-        mov [fs:bx], al
-        inc bx
-        dec cx
-        test cx, cx
-        jnz copyloop
-
-    mov ax, 0x0                     ; setup new segments
-    mov ds, ax
-    mov fs, ax
-    mov gs, ax
-    mov ss, ax
-    mov es, ax
-    ;; mov cs, ax                   ; we don't move cs as we should still read code from read only
-    mov sp, [ds:normal_stack]        ; no recursion it could blow up the ivt
-
-    lidt [_ivt]                     ; setup ivt
-    mov ax, 0xf000
-    mov fs, ax                      ; done setting up ivt
-    mov eax, 0x10
-    mov cr0, eax
-
-    call setup_interupt_controller
-    mov di, 0x0
-    call set_irq_bit_mask_line          ; disable programable timer
-    sti                             ; now it seams safe to enable interrupts
-    xor ax, ax
-    int 0x14                        ; setup serial console
-
-    call main                       ; call main
-    mov ax, 0xcafe
-    hlt                             ; halt computer if main exits
-
-
-align 0x100
 main:                           ; main is the first stable state where we have stack
                                 ; and ivt so we can detect erros and simple interupts
-                                ; for io communication with serial
+                                ; for io communication with serial.
                                 ; mains job is to load the challenge and switch to 64 bit
                                 ; where we solve the challenge
                                 ; and output result when done in 64bit mode as we don't have io
@@ -452,6 +533,7 @@ main:                           ; main is the first stable state where we have s
     call setup_paging
     mov di, solve
     mov si, chall_in_out
+
     call call64bit
     mov di ,chall_in_out
     call puts
@@ -464,29 +546,41 @@ main:                           ; main is the first stable state where we have s
     ret
 
 call64bit:
-    cli                         ; no interupts from here!
+    ;; cli                         ; this fucks with me as the way i read intel documentation
+                                   ; it should be fine disabling interupt, but this seams to fail
+                                   ; on write to model specific register.
+                                   ; even more fucked thing is that it only shits it self
+                                   ; when running in hypervised mode and, not emulated by qemu.
+                                   ; so guess i found in consistency between kvm hypervisor and qemu
+                                   ; we disable IRQ in boot so should be fine any ways 🤞
     save16regs
     mov [normal_stack], sp        ; save old rsp
-    mov eax, 0xd000             ; point cr3 to page tables
-    mov cr3, eax
-
-    lgdt [gdtr]                 ; load global descriptor table
 
     mov eax, cr4
     or al, (1 << 5)             ; enable PAE
+    or al, (1 << 7)             ; enable PGE
     mov cr4, eax
+
+    mov eax, 0xd000             ; point cr3 to page tables
+    mov cr3, eax
+
 
     mov ecx, 0xC0000080          ; Set the C-register to 0xC0000080, which is the EFER MSR.
     rdmsr                        ; Read from the model-specific register.
-    or eax, 1 << 8               ; Set the LM-bit which is the 9th bit (bit 8).
+    or eax, (1 << 8)             ; Set the LM-bit which is the 9th bit (bit 8).
     wrmsr                        ; Write to the model-specific register.
 
     mov eax, cr0
     or eax, 0x80000011
     mov cr0, eax
-    jmp 0x08:bits64              ; crazy hack to hit jump trapoline for 64bit mode
+
+    lgdt [gdtr]                 ; load global descriptor table
+
+    jmp 0x08:bits64
+                                ; crazy hack to hit jump trapoline for 64bit mode
+                                ; not a near/realtive jump and code has relocated
+                                ; so we need to add relocaion offset.
     mov ax, 0xbeef
-    hlt
 
 
 setup_paging:                   ;will create linear mapping from virtual to physical in 64bit mode
@@ -582,10 +676,14 @@ uart_read:
     int 0x14
     ret
 
+code_relocation_end:            ; this is all the code we need for real mode
+
 align 0x1000
 
     ;; here we write the 64 bit code segment
+    ;; this is relocated to 0x200000 as 64 bit can live in higher address space
 [bits 64]
+code_relocation_64_start:
 solve:                          ; we are in long mode!!!!!
                                 ; input in rdi
     push rbp
@@ -695,28 +793,8 @@ to_ascii_loop:
     pop rbp
     ret
 
-exit:
-    ;; jmp $
-    mov [retval64], ax
-    xor rax, rax                ; ss
-    push ax
-    mov rax, 0x8000             ; rsp
-    push ax
-    mov rax, 0                  ; rflags
-    push rax
-    mov rax, 0x10               ; cs
-    push rax
-    mov rax, exit_trampoline
-    push rax                    ; rip
 
-    mov rcx, 0xC0000080          ; Set the C-register to 0xC0000080, which is the EFER MSR.
-    rdmsr                        ; Read from the model-specific register.
-    mov rax, 0x0
-    wrmsr                        ; Write to the model-specific register.
-                                 ; set LME = 0
-
-    iretq                       ; jmp exit_trampoline
-
+code_relocation_64_end:
 
 times 0xfff0-($-$$) db 0        ; The reset address of x86 cpus 0xf000:0xffff0 cs:eip or ip as we are in 16bit real mode
                                 ; First addresse ever executed upon boot
@@ -729,20 +807,6 @@ jmp 0xf000:boot                 ; far jmp instruction to boot sequence
 
 times 0x10000-($-$$) db 0       ; pad bios to 0x10000 length
                                 ; python startup will prepend 0x30000
-
-    ;; memory layout:
-    ;;
-    ;; ivt                      [0x0000:0x0000 - 0x0000:0x03ff]
-    ;; global data              [0x0000:0x0400 - 0x0000:0x0fff]
-    ;; chall input data         [0x0000:0x1000 - 0x0000:0xffff]
-    ;; normal 16bit stack       [0x0000:0xa000 - 0x0000:0xafff]
-    ;; interrupt stack          [0x0000:0xb000 - 0x0000:0xbfff]
-    ;; l1 page tables           [0x0000:0xd000 - 0x0000:0xdfff]
-    ;; l2 page tables           [0x0000:0xe000 - 0x0000:0xefff]
-    ;; l3 page tables           [0x0000:0xf000 - 0x0000:0xffff]
-    ;; ivt jump table           [0xf000:0x1000 - 0xf000:0x17ff]
-    ;; io communication code    [0xf000:0x1800 - 0xf000:0x1fff]
-    ;; boot and main code       [0xf000:0x2000 - 0xf000:0x2fff]
-    ;; 64 bit code              [0xf000:0x3000 - 0xf000:0xffff]
-    ;;
-    ;; 64 bit stack             [0xfff000] paging (not in range from 16 bit so segmented addr makes no sence)
+                                ; to allign with a 256k spi flash like the 25q64fvsig
+                                ; very popular chip in laptops
+                                ; how they map spi to address space is transistor magic 🪄
