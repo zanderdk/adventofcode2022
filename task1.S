@@ -16,12 +16,15 @@ org 0x0                         ; actually this is at 0xf0000 for boot code (the
 ;; l3 page tables           [0x0000:0xf000 - 0x0000:0xffff]
 ;; boot code                [0xf000:0x0000 - 0x0000:0x2fff]
 ;;
-;; 64 bit stack             [0x200000]  paging (not in range from 16 bit so segmented addr makes no sence)
+;; 64 bit stack             [0x120000]  paging (not in range from 16 bit so segmented addr makes no sence)
+;;                                      0x10ffef is the max reachable addr without a20 line enabled
+;;                                      which but 64bit code can live here with relocation
 ;; 64 bit stack             [0xfff000]  paging same 10k stack should be enough
 
     ;; some very important global defines
 ivt_spacing     equ 0x8
 chall_in_out    equ 0x1000
+init_stack_addr equ 0x7000
 
 UART equ 0x3f8
 
@@ -79,6 +82,58 @@ ICW4_SFNM equ 0xc
 %endmacro
 
 
+    ;; caller must handle what interupt she protect against
+%imacro switch_to_protected 0
+%push protswicthctx
+
+    mov ecx, cr0
+    or  ecx, 0x1                ;set PG in control register 0
+    mov cr0, ecx
+
+    jmp 0x20:(%$nextmode - code_relocation_start + 0x7000)
+%$nextmode:
+[bits 32]
+    mov ecx, 0x28
+    mov ds, ecx
+%pop protswicthctx
+%endmacro
+
+%imacro switch_to_real 0
+%push realswicthctx
+[bits 32]
+    jmp 0x10:(%$proteced16 - code_relocation_start + 0x7000)
+%$proteced16:
+[bits 16]
+    mov ecx, cr0
+    and ecx, 0xfffffffe         ; clear PG in control register 0
+    mov cr0, ecx
+
+    jmp 0x00:(%$nextmode - code_relocation_start + 0x7000)
+%$nextmode:
+    mov ecx, 0x0
+    mov ds, ecx
+%pop realswicthctx
+%endmacro
+
+%imacro relocate 3
+%push relo
+    mov eax, %1
+    mov ebx, %2
+    mov ecx, %3
+%$reloc_loop:                   ;source: eax, target: ebx, count: ecx
+                                ;yes we can use 32bit regs but not 32 bit BUS
+    mov dl, [cs:ebx]
+    mov [ds:eax], dl
+    inc eax
+    inc ebx
+    dec ecx
+    test ecx, ecx
+    jnz %$reloc_loop
+%pop relo
+%endmacro
+
+[bits 16]
+
 ;; end macros
 ;;
 ;; ////         addr: 0x0000:0x0000
@@ -97,22 +152,24 @@ _ivt:
     dd 0x3ff                    ; limit idt
     dd 0x0                      ; base idt
 
-gdtr:                           ;gdt for 64 bit
-dw 8 * 4 - 1                    ;4 is number of segments
+gdtr:                           ; gdt for 64 bit
+dw 8 * 6 - 1                    ; 6 is number of segments
 dd gdt
 
 gdt:
 dq 0x0000000000000000 ; null segment (x86 spec needs it)
 dq 0x00Af9A000000ffff ; 64 bit code segment
-dq 0x001f9A000000ffff ; here we clear the 64bit flag and 32bit flag and set a limit
+dq 0x001f9A000000ffff ; 16 bit code segment, here we clear the 64bit flag and 32bit flag and set a limit
 dq 0x00cf93000000ffff ; stack
+dq 0x00cf9a000000ffff ; protected mode we need protected mode to write to higer address space
+dq 0x00cf92000000ffff ; data segment for protected mode
 
 normal_stack:
     dw 0xa000
 ivt_stack:
     dw 0xb000
 retval64:
-    dw 0x000
+    dq 0x00
 
 prompt:
     db '> ', 0
@@ -125,10 +182,12 @@ bits64:                         ; crazy hack puting code in data but we need
                                 ; offset calulations when this code lives in lowest
                                 ; possible address space
     and rdi, 0x000000000000ffff
-    mov ax, 0x18
-    mov ss, ax
+    mov eax, 0x18
+    mov ss, eax
+    mov eax, 0x28
+    mov ds, eax
     mov rsp, 0xfff000
-    add rdi, 0x200000           ; add relocation offset
+    add rdi, 0x120000           ; add relocation offset
     sub rdi, 0x2000             ; substract rom offset
                                 ; eg function at 0x205a maps to -> 0x20005a
                                 ; but this fuction will be called with 0x205a
@@ -137,40 +196,51 @@ bits64:                         ; crazy hack puting code in data but we need
     call rax
 
     ;; exit from 64bit code starts here
-    mov [retval64], ax
-    xor rax, rax                ; ss
-    push ax
-    mov rax, 0x8000             ; rsp
-    push ax
-    mov rax, 0                  ; rflags
+    mov [retval64], rax
+
+    mov rax, 0x28                ; ss
+    shl rax, 32
+    or rax, 0x8000              ; rsp
     push rax
-    mov rax, 0x10               ; cs
+    pushfq
+    mov rax, 0x20               ; cs
     push rax
-    mov rax, exit_trampoline
+    mov rax, clear_lme
     push rax                    ; rip
+    iretq                       ; jmp clear_lme
 
-    mov rcx, 0xC0000080          ; Set the C-register to 0xC0000080, which is the EFER MSR.
+[bits 32]
+clear_lme:
+    mov ecx, 0xC0000080          ; Set the C-register to 0xC0000080, which is the EFER MSR.
     rdmsr                        ; Read from the model-specific register.
-    mov rax, 0x0
-    hlt
+    and eax, ~(1 << 8)           ; set LME = 0
     wrmsr                        ; Write to the model-specific register.
-                                 ; set LME = 0
-
-    iretq                       ; jmp exit_trampoline
-
-
-[bits 16]
-exit_trampoline:
-    mov eax, cr0
-    and eax, 0xfffffffe         ; disable protected mode
-    mov cr0, eax
-    jmp 0x0:page_disable
+    jmp 0x20:page_disable
 
 page_disable:
     mov eax, cr0
     and eax, 0x7fffffff         ; disable paging
     mov cr0, eax
-    jmp 0x0000:exit_restore_regs
+
+    mov eax, cr4
+    and eax, 0xffffff5d         ; diable compatibilty mode
+
+    mov cr4, eax
+    pushf
+    pop eax
+    and eax, ~(1 << 17)         ; clear VM flag in flag register
+                                ; should actualy not be nessesary as cr4 already disallow
+                                ; compatiblity mode's
+    push eax
+    popf
+    jmp 0x10:diable_protected
+
+[bits 16]
+diable_protected:
+    mov eax, cr0
+    and eax, 0xfffffffe         ; disable protected mode
+    mov cr0, eax
+    jmp 0x0:exit_restore_regs
 
 exit_restore_regs:
     zeroselectors                 ; we are back in real mode all selectors can be reset
@@ -178,13 +248,13 @@ exit_restore_regs:
     restore16regs
     jmp 0x0000:retback
 
-retback:
-    mov ax, [retval64]
-    sti                           ; enable interupts again
+retback:                          ; finaly we are back in real mode
+    mov ax, [retval64]            ; and we have 16bit stack should should be safe to
+    sti                           ; reenable interupts again, we can handle it from now on 💪
     ret
 
 data_segment_end:               ; code segment starts here and is mapped to code selector 0xf000
-times 0x1000-($-$$) db 0       ; align code area
+times 0x1000-($-$$) db 0        ; align code area
 bios_code_here:                 ; this is the bios code we will move from flash to ram
 
 
@@ -218,43 +288,44 @@ align ivt_spacing
 align 0x800
 
 boot:
-    cli                             ; disable interupt, nothing works doh.
-    mov ax, 0x0000
-    mov fs, ax
-    mov gs, ax
-    mov ss, ax
-    mov es, ax
-    mov fs, ax
-    mov ds, ax                      ; setup data segment even though we haven moved globals
-                                    ; relocation can take care of that after using 32bit regs
+    cli
+    cld
+    xor dx, dx
+    mov ss, dx
+    mov ds, dx
+    mov esp, init_stack_addr        ; setup very early stack
 
-    mov sp, [cs:normal_stack]       ; setup stack using code selector as it's the only segment
-                                    ; still pointing to flash address space
-                                    ; no recursion it could blow up the ivt
+    ;; disable non-maskable interupts
+    mov eax, 0x8f
+    out 0x70, al
+    in al, 0x71
 
-    mov edi, 0x0
-    mov esi, 0xf0000
-    mov ecx, 0x1000
-    call relocate_memcpy            ; relocated ivt and globals
+    ;; enable a20
+    in al, 0x92
+    or al, 0x2
+    out 0x92, al
 
-    mov edi, 0x7000
-    mov esi, (0xf0000 +  code_relocation_start)
-    mov ecx, (code_relocation_end - code_relocation_start)
-    call relocate_memcpy            ; relocated ivt and globals
+    relocate 0x0, 0x0, 0x1000       ; relocate from 0x0 to 0x0 actually makes sence as
+                                    ; source souce use code selector and target data
+                                    ; selector. so source is offset into flash.
 
-    mov edi, 0x200000
-    mov esi, (0xf0000 + code_relocation_64_start)
-    mov ecx, (code_relocation_64_end - code_relocation_64_start)
-    call relocate_memcpy            ; relocated ivt and globals
+    relocate 0x7000, code_relocation_start, (code_relocation_end - code_relocation_start)
+    lgdt ds:[gdtr]                  ; load global descriptor table
+                                    ; now mode switching is possible
 
-    ; getting cs = 0
-    ; now code is relocated and this is a far jmp so we need absolute addr
-    ; which so we need to calc the relocated address lucky this is
-    ; a not issue for near jmp's
-    jmp 0x0:(after_relocation - code_relocation_start + 0x7000)
-after_relocation:
+
+    switch_to_protected             ; here both code and data slector points to zero
+                                    ; but we can address much higher so we offset into flash maunaly
+                                    ; 0xf0000 is flash offset
+    relocate 0x120000, (code_relocation_64_start + 0xf0000), (code_relocation_64_end - code_relocation_64_start)
+
+    switch_to_real                  ; switch back to real
+
     lidt [_ivt]                     ; setup ivt
 
+    mov eax, 0x80
+    out 0x70, al
+    in al, 0x71
 
     ; Disable IRQs
     mov al, 0xFF                    ; Out 0xFF to 0xA1 and 0x21 to disable all IRQs.
@@ -274,17 +345,6 @@ after_relocation:
     call main                       ; call main
     mov ax, 0xcafe
     hlt                             ; halt computer if main exits
-
-relocate_memcpy:                ;source: esi, target: edi, count: ecx
-                                ;yes we can use 32bit regs but not 32 bit BUS
-    mov al, [esi]
-    mov [edi], al
-    inc esi
-    inc edi
-    dec ecx
-    test ecx, ecx
-    jnz relocate_memcpy
-    ret
 
 int_handler:
     mov bx, ax
@@ -528,42 +588,39 @@ main:                           ; main is the first stable state where we have s
     sub sp, 0x20
     mov di, prompt
     call puts
-    mov di, chall_in_out         ; now puts the input buffer as we also use it to store output
-    call gets
+    ;; mov di, chall_in_out         ; now puts the input buffer as we also use it to store output
+    ;; call gets
     call setup_paging
     mov di, solve
     mov si, chall_in_out
 
     call call64bit
-    mov di ,chall_in_out
-    call puts
+    ;; mov di ,chall_in_out
+    ;; call puts
     mov di, prompt
     call puts
-    mov di, 0x1400
-    call puts
+    ;; mov di, 0x1400
+    ;; call puts
     mov sp, bp
     pop bp
     ret
 
 call64bit:
-    ;; cli                         ; this fucks with me as the way i read intel documentation
-                                   ; it should be fine disabling interupt, but this seams to fail
-                                   ; on write to model specific register.
-                                   ; even more fucked thing is that it only shits it self
-                                   ; when running in hypervised mode and, not emulated by qemu.
-                                   ; so guess i found in consistency between kvm hypervisor and qemu
-                                   ; we disable IRQ in boot so should be fine any ways 🤞
     save16regs
     mov [normal_stack], sp        ; save old rsp
 
+    switch_to_protected         ; we need protected for rdmsr/wrmsr
+[bits 32]                       ; efer address is more than 16 bit cant reach without
+
     mov eax, cr4
-    or al, (1 << 5)             ; enable PAE
-    or al, (1 << 7)             ; enable PGE
+    or al, (1 << 1)             ; enable VME: enable compatilbity modes 32 and 16
+    or al, (1 << 5)             ; enable PAE: enable page extension 36bit needed for long mode
+    or al, (1 << 7)             ; enable PGE: PDE and PTE can be same address sapce
+                                ; wonder how da fuck cpu enforce PGE
     mov cr4, eax
 
     mov eax, 0xd000             ; point cr3 to page tables
     mov cr3, eax
-
 
     mov ecx, 0xC0000080          ; Set the C-register to 0xC0000080, which is the EFER MSR.
     rdmsr                        ; Read from the model-specific register.
@@ -574,13 +631,13 @@ call64bit:
     or eax, 0x80000011
     mov cr0, eax
 
-    lgdt [gdtr]                 ; load global descriptor table
-
     jmp 0x08:bits64
                                 ; crazy hack to hit jump trapoline for 64bit mode
                                 ; not a near/realtive jump and code has relocated
                                 ; so we need to add relocaion offset.
     mov ax, 0xbeef
+    hlt
+[bits 16]
 
 
 setup_paging:                   ;will create linear mapping from virtual to physical in 64bit mode
@@ -681,12 +738,15 @@ code_relocation_end:            ; this is all the code we need for real mode
 align 0x1000
 
     ;; here we write the 64 bit code segment
-    ;; this is relocated to 0x200000 as 64 bit can live in higher address space
+    ;; this is relocated to 0x120000 as 64 bit can live in higher address space
 [bits 64]
 code_relocation_64_start:
 solve:                          ; we are in long mode!!!!!
+    ;; ret
                                 ; input in rdi
     push rbp
+    pop rbp
+    ret
     mov rbp, rsp
     xor rax, rax
     xor rdx, rdx

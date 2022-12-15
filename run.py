@@ -34,6 +34,8 @@ cmd = "qemu-system-x86_64 -bios ./bios.bin -net none -cpu qemu64,+smep,+smap -mo
 # cmd = "qemu-system-x86_64 -bios ./bios.bin -monitor none -net none -enable-kvm -machine q35 -device intel-iommu -no-reboot -nographic"
 if args["ATTACH"]:
     cmd = "qemu-system-i386 -bios ./bios.bin -net none -cpu base -monitor none -no-reboot -nographic -serial stdio -s -d int"
+    # kvm:
+    # cmd = "qemu-system-i386 -bios ./bios.bin -net none -enable-kvm -monitor none -no-reboot -nographic -serial stdio -s -d int"
 print(cmd)
 cmd = cmd.split(" ")
 

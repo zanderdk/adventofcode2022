@@ -84,8 +84,8 @@ int main(void)
 
     if (!mem)
         err(1, "allocating guest memory");
-    /* memcpy(mem + 0xf0000, code_buf + 0x30000, 0x10000); */
-    memcpy(mem + 0xf0000, code_buf, len);
+    memcpy(mem + 0xf0000, code_buf + 0x30000, 0x10000);
+    /* memcpy(mem + 0xf0000, code_buf, len); */
 
     /* Map it to the second page frame (to avoid the real-mode IDT at 0). */
     struct kvm_userspace_memory_region region = {
@@ -209,6 +209,10 @@ quit:
     printf("rbx:         0x%016llX\n", regs.rbx);
     printf("rcx:         0x%016llX\n", regs.rcx);
     printf("rdx:         0x%016llX\n", regs.rdx);
+
+    puts("");
+    printf("rdi:         0x%016llX\n", regs.rdi);
+    printf("rsi:         0x%016llX\n", regs.rsi);
 
     puts("");
     printf("io->port: 0x%04hx\n", run->io.port);
