@@ -30,8 +30,8 @@ with open("./bios.bin", "wb") as bios_out:
     bios_out.write(out)
     bios_out.flush()
 
-# cmd = "qemu-system-x86_64 -bios ./bios.bin -net none -cpu qemu64,+smep,+smap -monitor none -no-reboot -nographic -serial stdio -s"
-cmd = "qemu-system-x86_64 -bios ./bios.bin -monitor none -net none -enable-kvm -no-reboot -nographic"
+cmd = "qemu-system-x86_64 -bios ./bios.bin -net none -cpu qemu64,+smep,+smap -monitor none -no-reboot -nographic -serial stdio -s"
+# cmd = "qemu-system-x86_64 -bios ./bios.bin -monitor none -net none -enable-kvm -no-reboot -nographic"
 if args["ATTACH"]:
     cmd = "qemu-system-i386 -bios ./bios.bin -net none -cpu base -monitor none -no-reboot -nographic -serial stdio -s -d int"
     # kvm:

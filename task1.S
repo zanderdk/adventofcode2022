@@ -577,19 +577,19 @@ main:                           ; main is the first stable state where we have s
     sub sp, 0x20
     mov di, prompt
     call puts
-    mov di, chall_in_out         ; now puts the input buffer as we also use it to store output
-    call gets
+    ;; mov di, chall_in_out         ; now puts the input buffer as we also use it to store output
+    ;; call gets
     call setup_paging
     mov di, solve
     mov si, chall_in_out
 
     call call64bit
-    mov di ,chall_in_out
-    call puts
+    ;; mov di ,chall_in_out
+    ;; call puts
     mov di, prompt
     call puts
-    mov di, 0x1400
-    call puts
+    ;; mov di, 0x1400
+    ;; call puts
     mov sp, bp
     pop bp
     ret
@@ -733,6 +733,7 @@ align 0x1000
 code_relocation_64_start:
 solve:                          ; we are in long mode!!!!!
                                 ; input in rdi
+    ret
     push rbp
     mov rbp, rsp
     xor rax, rax

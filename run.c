@@ -139,6 +139,11 @@ int main(void)
     if (ret == -1)
         err(1, "KVM_SET_REGS");
 
+    struct kvm_msr_list *msrs = malloc(sizeof(msrs) + 0x1000*4);
+    msrs->nmsrs = 0x1000;
+
+    ioctl(kvm, KVM_GET_MSR_FEATURE_INDEX_LIST, msrs);
+
     /* Repeatedly run code and handle VM exits. */
     while (1) {
         ret = ioctl(vcpufd, KVM_RUN, NULL);
