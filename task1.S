@@ -87,7 +87,7 @@ ICW4_SFNM equ 0xc
 %push protswicthctx
 
     mov ecx, cr0
-    or  ecx, 0x1                ;set PG in control register 0
+    or  ecx, 0x1                ;set PG in control register 1
     mov cr0, ecx
 
     jmp 0x20:(%$nextmode - code_relocation_start + 0x7000)
@@ -153,7 +153,7 @@ _ivt:
     dd 0x0                      ; base idt
 
 gdtr:                           ; gdt for 64 bit
-dw 8 * 6 - 1                    ; 6 is number of segments
+dw 8 * 7 - 1                    ; 7 is number of segments
 dd gdt
 
 gdt:
@@ -197,42 +197,31 @@ bits64:                         ; crazy hack puting code in data but we need
 
     ;; exit from 64bit code starts here
     mov [retval64], rax
+    mov rax, 0x28
+    mov ds, rax
 
+    ;; mov rax, ss
     mov rax, 0x28                ; ss
-    shl rax, 32
-    or rax, 0x8000              ; rsp
     push rax
-    pushfq
-    mov rax, 0x20               ; cs
+
+    mov rax, 0x8000              ; rsp
     push rax
-    mov rax, clear_lme
-    push rax                    ; rip
-    iretq                       ; jmp clear_lme
+    pushfq                         ; flags
+
+    mov rax, 0x20                 ; cs
+    push rax
+    mov rax, page_disable
+    push rax                      ; rip
+    iretq                         ; jmp clear_lme
 
 [bits 32]
-clear_lme:
-    mov ecx, 0xC0000080          ; Set the C-register to 0xC0000080, which is the EFER MSR.
-    rdmsr                        ; Read from the model-specific register.
-    and eax, ~(1 << 8)           ; set LME = 0
-    wrmsr                        ; Write to the model-specific register.
-    jmp 0x20:page_disable
-
 page_disable:
     mov eax, cr0
     and eax, 0x7fffffff         ; disable paging
+                                ; we should not disable LMA and LME in efter
+                                ; as Long mode cannot be active without paging
     mov cr0, eax
 
-    mov eax, cr4
-    and eax, 0xffffff5d         ; diable compatibilty mode
-
-    mov cr4, eax
-    pushf
-    pop eax
-    and eax, ~(1 << 17)         ; clear VM flag in flag register
-                                ; should actualy not be nessesary as cr4 already disallow
-                                ; compatiblity mode's
-    push eax
-    popf
     jmp 0x10:diable_protected
 
 [bits 16]
@@ -328,15 +317,15 @@ boot:
     in al, 0x71
 
     ; Disable IRQs
-    mov al, 0xFF                    ; Out 0xFF to 0xA1 and 0x21 to disable all IRQs.
-                                    ; only do this while debugging
-                                    ; (not every code part can be debugged like this but makes some easier)
-    out 0xA1, al
-    out 0x21, al
+    ;; mov al, 0xFF                    ; Out 0xFF to 0xA1 and 0x21 to disable all IRQs.
+    ;;                                 ; only do this while debugging
+    ;;                                 ; (not every code part can be debugged like this but makes some easier)
+    ;; out 0xA1, al
+    ;; out 0x21, al
 
-    ;; call setup_interupt_controller ;do this when not debugging
-    ;; mov di, 0x0
-    ;; call set_irq_bit_mask_line      ; disable programable timer
+    call setup_interupt_controller  ; do this when not debugging
+    mov di, 0x0
+    call set_irq_bit_mask_line      ; disable programable timer
 
     sti                             ; now it seams safe to enable interrupts
     xor ax, ax
@@ -588,19 +577,19 @@ main:                           ; main is the first stable state where we have s
     sub sp, 0x20
     mov di, prompt
     call puts
-    ;; mov di, chall_in_out         ; now puts the input buffer as we also use it to store output
-    ;; call gets
+    mov di, chall_in_out         ; now puts the input buffer as we also use it to store output
+    call gets
     call setup_paging
     mov di, solve
     mov si, chall_in_out
 
     call call64bit
-    ;; mov di ,chall_in_out
-    ;; call puts
+    mov di ,chall_in_out
+    call puts
     mov di, prompt
     call puts
-    ;; mov di, 0x1400
-    ;; call puts
+    mov di, 0x1400
+    call puts
     mov sp, bp
     pop bp
     ret
@@ -613,7 +602,8 @@ call64bit:
 [bits 32]                       ; efer address is more than 16 bit cant reach without
 
     mov eax, cr4
-    or al, (1 << 1)             ; enable VME: enable compatilbity modes 32 and 16
+    or al, (1 << 0)             ; enable VME: enable compatilbity modes 32 and 16
+    or al, (1 << 1)             ; enable PVI
     or al, (1 << 5)             ; enable PAE: enable page extension 36bit needed for long mode
     or al, (1 << 7)             ; enable PGE: PDE and PTE can be same address sapce
                                 ; wonder how da fuck cpu enforce PGE
@@ -742,11 +732,8 @@ align 0x1000
 [bits 64]
 code_relocation_64_start:
 solve:                          ; we are in long mode!!!!!
-    ;; ret
                                 ; input in rdi
     push rbp
-    pop rbp
-    ret
     mov rbp, rsp
     xor rax, rax
     xor rdx, rdx
