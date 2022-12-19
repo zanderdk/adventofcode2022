@@ -577,19 +577,20 @@ main:                           ; main is the first stable state where we have s
     sub sp, 0x20
     mov di, prompt
     call puts
-    ;; mov di, chall_in_out         ; now puts the input buffer as we also use it to store output
-    ;; call gets
-    call setup_paging
+    mov di, chall_in_out         ; now puts the input buffer as we also use it to store output
+    call gets
+
+    call setup_paging           ; setup paging for 64 bit mode
+
     mov di, solve
     mov si, chall_in_out
+    call call64bit              ; run the 64bit solve assembly
+                                ; rax will contain timing information
+                                ; inspect it to see true speed
 
-    call call64bit
-    ;; mov di ,chall_in_out
-    ;; call puts
-    mov di, prompt
-    call puts
-    ;; mov di, 0x1400
-    ;; call puts
+    mov di ,chall_in_out
+    call puts                   ; print output buffer
+
     mov sp, bp
     pop bp
     ret
@@ -726,122 +727,20 @@ uart_read:
 code_relocation_end:            ; this is all the code we need for real mode
 
 align 0x1000
-
-    ;; here we write the 64 bit code segment
-    ;; this is relocated to 0x120000 as 64 bit can live in higher address space
-[bits 64]
 code_relocation_64_start:
-solve:                          ; we are in long mode!!!!!
-                                ; input in rdi
-    ret
-    push rbp
-    mov rbp, rsp
-    xor rax, rax
-    xor rdx, rdx
-    rdtsc
-    shl rdx, 32
-    or rax, rdx
-    push rax
+;; here we write the 64 bit code segment
+;; this is relocated to 0x120000 as 64 bit can live in higher address space
 
-    push 0x0
-    mov rbx, 0x0a
-    xor rsi, rsi
-solve_loop:
-    test byte [rdi], 0xff
-    jz solve_end
-    cmp [rdi], bl
-    jz next
-    call strtoul
-    add rsi, rax
-    jmp solve_loop
+%assign i 0
+%rep    25                      ;25 task doh
+%defstr TASK_STR ./task%[i]/main.S
 
-next:
-    push rsi
-    inc rdi
-    xor rsi, rsi
-    cmp [rdi], bl
-    je solve_end
-    jmp solve_loop
+%if TASK_NR=i
+%include TASK_STR
+%endif
 
-solve_end:
-    push rsi
-    mov rdi, 0x1000
-    mov rsi, 0x0030303030303030
-    mov qword [rdi], rsi
-
-    push 0
-    pop rsi
-pop_loop:
-    pop rax
-    test rax, rax
-    jz pop_end
-    cmp rax, rsi
-    cmova rsi, rax
-    jmp pop_loop
-
-pop_end:
-    mov rdi, 0x1006
-    call to_ascii
-    rdtsc
-    shl rdx, 32
-    or rax, rdx
-    mov rbx, rax
-    pop rax
-    xchg rax, rbx
-    sub rax, rbx
-
-
-    mov rdi, 0x1400
-    mov rsi, 0x0030303030303030
-    mov qword [rdi], rsi
-
-    mov rsi, rax
-    mov rdi, 0x1406
-    call to_ascii
-
-    mov rsp, rbp
-    pop rbp
-    ret
-
-strtoul:
-    xor rax, rax
-    xor rcx, rcx
-strtoul_loop:
-    mov cl, [rdi]
-    cmp cl, 0x0a
-    je strtoul_end
-    imul rax, 10
-    sub rcx, '0'
-    add rax, rcx
-    inc rdi
-    jmp strtoul_loop
-strtoul_end:
-    inc rdi
-    ret
-
-to_ascii:
-    push rbp
-to_ascii_loop:
-    xor rax, rax
-    xor rdx, rdx
-    mov rax, rsi
-    mov rdx, 0x00
-    push 10
-    pop rcx
-    div rcx
-    mov rsi, rax
-    mov rbp, rdx
-    add rbp, '0'
-    xchg rax, rbp
-    mov byte [rdi], al
-    xchg rax, rbp
-    dec rdi
-    cmp rax, 0x0
-    jne to_ascii_loop
-    pop rbp
-    ret
-
-
+%assign i i+1
+%endrep
 code_relocation_64_end:
 
 times 0xfff0-($-$$) db 0        ; The reset address of x86 cpus 0xf000:0xffff0 cs:eip or ip as we are in 16bit real mode
