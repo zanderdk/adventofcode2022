@@ -23,13 +23,11 @@ solve:                          ; we are in long mode!!!!!
     or rax, rdx
     mov r10, rax                ; save clock cycles
 solve_loop:
-    ;; mov
 
     xor rax, rax                ; zero shit
     xor rbx, rbx
-    xor rcx, rcx
     xor rdx, rdx
-    mov bl, [rdi]               ; put opponent bl
+    mov bl, [rdi]               ; put opponent in bl
     cmp bl, 0                   ; test if done
     jz done
     mov al, [rdi + 2]           ; put us in al
@@ -41,23 +39,16 @@ solve_loop:
     add bl, 2
     sub bl, al
     mov al, bl
-    mov rbx, 3                  ; x = us y = opponent
+    mov rbx, 3                  ; x == us == bl, y == opponent == al
     div rbx                     ; rdx = (2 + y - x) % 3
 
-    mov rax, rdx                ; swab bit 0 and 1 in n aka rax
-    mov rbx, rax
-    and rbx, 1                  ; bit0 = n >> 0
-    mov rcx, rax
-    shr rcx, 1                  ; bit1 = n >> 1
+    ror dl, 1                   ; swap bit0 and bit1 in rdx
+                                ; rotate right and left should be operators
+    mov al, dl                  ; in all languages
+    shr dl, 6
+    or al, dl
+    and al, 0x3                 ; store swap result in rax
 
-    xor rbx, rcx                ; bit0 ^ bit1
-    mov rcx, rbx
-
-    shl rbx, 1
-    ;; shl rcx, 0                  ; not needed cause we swap 1 and 0
-
-    or  rbx, rcx
-    xor rax, rbx                ; bit 0 and 1 swaped
     mov rbx, rax
     shl rax, 1
     add rax, rbx                ; rax = rax * 3
@@ -68,7 +59,7 @@ solve_loop:
 
 
 done:                           ; print shit
-    mov rax, r8
+    mov rax, r8                 ; result is now in rax
     mov rdi, 0x1000
     mov rsi, 0x0030303030303030 ; put ascii zero in output
     mov qword [rdi], rsi
