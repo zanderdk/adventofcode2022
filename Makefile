@@ -6,7 +6,7 @@ TASK ?= 1
 # 'make build' will create bios.bin for task1
 # 'make TASK=2 build' will create bios.bin for task2
 # make clean before making another task. PR welcom to make conditional make dependencies
-# i use this 'make clean && make TASK=1 build'
+# i use this 'make clean && make TASK=1 run'
 
 #don't know why need the bash but aint working without
 debug16: bios.bin
